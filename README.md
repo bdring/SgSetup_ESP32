@@ -33,13 +33,13 @@ RPM:10 SGT:24 SGV:0000 TSTEP: 01407 SG: 1 I:0410
 
  ### Output
 
- Typical: RPM:10 SGT:24 SGV:0442 TSTEP: 01407 SG:0 I:397
- RPM = Current Spped of the motors
- SGT = Current StallGuard Threashold
- SGV = Current reported StallGaurd value
- TSTEP = Time in microseconds between steps. Use this to determine TCOOLTHRS value
- SG = Stall detected (1 or 0)
- I = Motor current in mA 
+ * Typical: RPM:10 SGT:24 SGV:0442 TSTEP: 01407 SG:0 I:397
+ * RPM = Current Spped of the motors
+ * SGT = Current StallGuard Threashold
+ * SGV = Current reported StallGaurd value
+ * TSTEP = Time in microseconds between steps. Use this to determine TCOOLTHRS value
+ * SG = Stall detected (1 or 0)
+ * I = Motor current in mA 
 
 ### Tips
 
