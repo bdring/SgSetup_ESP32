@@ -33,13 +33,13 @@ RPM:10 SGT:24 SGV:0000 TSTEP: 01407 SG: 1 I:0410
 
  ### Output
 
- Typical: RPM:10 SGT:24 SGV:0442 TSTEP: 01407 SG:0 I:397
- RPM = Current Spped of the motors
- SGT = Current StallGuard Threashold
- SGV = Current reported StallGaurd value
- TSTEP = Time in microseconds between steps. Use this to determine TCOOLTHRS value
- SG = Stall detected (1 or 0)
- I = Motor current in mA 
+ * Typical: RPM:10 SGT:24 SGV:0442 TSTEP: 01407 SG:0 I:397
+ * RPM = Current Spped of the motors
+ * SGT = Current StallGuard Threashold
+ * SGV = Current reported StallGaurd value
+ * TSTEP = Time in microseconds between steps. Use this to determine TCOOLTHRS value
+ * SG = Stall detected (1 or 0)
+ * I = Motor current in mA 
 
 ### Tips
 
@@ -49,3 +49,8 @@ use it for your homing. Start with about 10 RPM
 * Play with RPM (+ & - keys) and StallGuard Threadhold (i & d keys) until you see high SGV  
 while running and a SG=1 when stalling (or nearly stalling)
 * Note the the TSTEP value and plug a slightly lower value in TCOOLTHRS. This will prevent SG=1 at at slower values.
+
+### Libraries Used
+
+* [TMC2130Stepper](https://github.com/teemuatlut/TMC2130Stepper) Control library for TMC2130 Drivers
+* [printf](https://github.com/mpaland/printf) Adds printf, sprintf, etc to make well formated output easy.
