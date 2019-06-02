@@ -16,13 +16,13 @@
  * 
  * StallGuard only works in coolstep mode. It will not work in the quiet Stealthchop modes
  *
- * It only works reliably in a narrow speed band. You will want to find this speed and 
- * use it for your homing. Start with about 10 RPM
+ * It only works reliably in a speed band. You will want to find this speed and 
+ * use it for your homing. Start with about 1 RPS
  *
  * Play with RPM (+ & - keys) and StallGuard Threadhold (i & d keys) until you see high SGV  
  * while running and a SG=1 when stalling (or nearly stalling)
  *
- * Not the the TSTEP value and plug a slightly lower value in TCOOLTHRS. This will prevent SG=1 at
+ * Note the the TSTEP value and plug a slightly lower value in TCOOLTHRS. This will prevent SG=1 at
  * at slower values.
  * 
  */
@@ -32,11 +32,14 @@
 #define MICROSTEPPING 16 
 #define DRIVER_CURRENT_mA 400 // current in milliamps  
  
-#define MAX_SPEED_RPM  120
-#define MIN_SPEED_RPM  4
+#define MAX_SPEED_RPS  60
+#define MIN_SPEED_RPS  1
+#define INIT_SPEED_RPS 1  // needs to be a bit slow or the motor will stall
 
 #define DISPLAY_INTERVAL 10 // in milliseconds. How oftn to display values
 
+
+#define INIT_SGT_VALUE 0
 
 #define EN_PIN    GPIO_NUM_13
 #define DIR_PIN   GPIO_NUM_26
@@ -48,8 +51,8 @@
 TMC2130Stepper driver = TMC2130Stepper(CS_PIN);
 
 bool vsense;
-volatile uint16_t speed_rpm = 10; // a good starting point for a lot of motors
-int8_t sg_value = 24;
+volatile uint16_t speed_rps = INIT_SPEED_RPS; // a good starting point for a lot of motors
+int8_t sg_value = INIT_SGT_VALUE;
 
 
 uint16_t rms_current(uint8_t CS, float Rsense = 0.11) {
@@ -58,9 +61,9 @@ uint16_t rms_current(uint8_t CS, float Rsense = 0.11) {
 }
 
 // used to get step interval from RPM
-uint32_t step_interval_us(uint16_t rpm) { 
-	uint32_t steps_pec_second = ((MOTOR_STEPS * MICROSTEPPING * rpm) / 60);	
-	return (1000000 / steps_pec_second);
+uint32_t step_interval_us(uint16_t rps) { 
+	uint32_t steps_per_second = ((MOTOR_STEPS * MICROSTEPPING * rps));	
+	return (1000000 / steps_per_second);
 }
 
 
@@ -77,7 +80,7 @@ void IRAM_ATTR onTimer(){
 char buff[100];  // for sprintf
 
 void setup() {
-	Serial.begin(250000); //init serial port and set baudrate    
+	Serial.begin(115200); //init serial port and set baudrate    
     Serial.println("\r\nTMC2130 StallGuard2 test program\r\n");
 	Serial.println("'+' = faster");
 	Serial.println("'-' = slower");
@@ -88,7 +91,6 @@ void setup() {
 	Serial.println("'d' = dec sg");	
 	Serial.println("Send '1' character to begin (\r\n");	
 	
-	// wait for any key to begin so the user can read the prompt
 	while(Serial.available() == 0)
 	{
 	}
@@ -109,24 +111,24 @@ void setup() {
 	// Set timer interrupt
     timer = timerBegin(0, 80, true);  //set timer to microseconds divider (80 MHz / 80 = 1 MHz, as for 1 microsconds)
     timerAttachInterrupt(timer, &onTimer, true);
-    timerAlarmWrite(timer, step_interval_us(speed_rpm), true); //set alarm for every 128 microseconds, on rising/falling edge
+    timerAlarmWrite(timer, step_interval_us(speed_rps), true); //set alarm for every 128 microseconds, on rising/falling edge
 	timerAlarmEnable(timer); //enable alarm    
   
   
+	
+  
 
-	//set TMC2130 config
-    driver.push();
+	driver.push();
     driver.toff(3);
     driver.tbl(1);
-	driver.chopper_mode(0); // Standard mode (spreadCycle)
     driver.hysteresis_start(4);
     driver.hysteresis_end(-2);
-    driver.rms_current(DRIVER_CURRENT_mA); // mA
-    driver.microsteps(MICROSTEPPING);
+    driver.rms_current(600); // mA
+    driver.microsteps(16);
     driver.diag1_stall(1);
     driver.diag1_active_high(1);
-	driver.TCOOLTHRS(1400); // must be higher than than TSTEP 
-	driver.sg_filter(0);
+    driver.coolstep_min_speed(0xFFFFF); // 20bit max
+    driver.THIGH(0);
     driver.semin(5);
     driver.semax(2);
     driver.sedn(0b01);
@@ -136,6 +138,12 @@ void setup() {
 	digitalWrite(EN_PIN, LOW);
 
 	vsense = driver.vsense(); 
+	
+	sprintf(buff, "IO In: %u\r\n", driver.IOIN() & 0xFF);
+	Serial.print(buff);
+	// wait for any key to begin so the user can read the prompt
+	
+	
 }
 
 void loop()
@@ -149,16 +157,16 @@ void loop()
     if (read_byte == '0')      { timerAlarmDisable(timer); digitalWrite( EN_PIN, HIGH ); }
     else if (read_byte == '1') { timerAlarmEnable(timer); digitalWrite( EN_PIN,  LOW ); }
     else if (read_byte == '+') {
-      if (speed_rpm < MAX_SPEED_RPM) { 
-        speed_rpm += 1; 
-        timerAlarmWrite(timer, step_interval_us(speed_rpm), true); 
+      if (speed_rps < MAX_SPEED_RPS) { 
+        speed_rps += 1; 
+        timerAlarmWrite(timer, step_interval_us(speed_rps), true); 
       }
     }
     else if (read_byte == '-') {
-      if (speed_rpm > MIN_SPEED_RPM) { 
-        speed_rpm -= 1; 
+      if (speed_rps > MIN_SPEED_RPS) { 
+        speed_rps -= 1; 
 		Serial.println("slower");
-        timerAlarmWrite(timer, step_interval_us(speed_rpm), true); 
+        timerAlarmWrite(timer, step_interval_us(speed_rps), true); 
       }
 
     }
@@ -186,15 +194,20 @@ void loop()
   {
     last_time = ms;
 	
-	 uint32_t drv_status = driver.DRV_STATUS();	
+	uint32_t TSTEP = driver.TSTEP();
 	
-	sprintf(buff, "RPM:%02d SGT:%02d SGV:%04d", speed_rpm, sg_value, (drv_status & SG_RESULT_bm)>>SG_RESULT_bp);
-	Serial.print(buff);
+	if (TSTEP != 0xFFFFF) {	// if driver is stepping
 	
-	sprintf(buff, " TSTEP: %05d", driver.TSTEP());
-	Serial.print(buff);
+		uint32_t drv_status = driver.DRV_STATUS();	
 	
-	sprintf(buff, " SG: %d I:04%d \r\n", (drv_status & STALLGUARD_bm)>>STALLGUARD_bp, DEC, (drv_status & CS_ACTUAL_bm)>>CS_ACTUAL_bp);
-	Serial.print(buff);
+		sprintf(buff, "RPS:%02d SGT:%02d SGV:%04d", speed_rps, sg_value, (drv_status & SG_RESULT_bm)>>SG_RESULT_bp);
+		Serial.print(buff);
+		
+		sprintf(buff, " TSTEP: %05d", TSTEP);
+		Serial.print(buff);
+		
+		sprintf(buff, " SG: %d I:04%d \r\n", (drv_status & STALLGUARD_bm)>>STALLGUARD_bp, DEC, (drv_status & CS_ACTUAL_bm)>>CS_ACTUAL_bp);
+		Serial.print(buff);	
+	}
   }
 }
