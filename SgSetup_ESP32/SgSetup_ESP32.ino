@@ -1,3 +1,5 @@
+#include <MeanFilterLib.h>
+
 /**
  * Author Barton Dring @buildlog
  * 
@@ -28,23 +30,31 @@
  */
  #include "print.h" // For sprintf support https://github.com/mpaland/printf
  
-#define MOTOR_STEPS 200 // steps per rev typically 200 (1.8°) to 400 (0.9°)
-#define MICROSTEPPING 16 
+#define MOTOR_STEPS 200.0 // steps per rev typically 200 (1.8°) to 400 (0.9°)
+#define MICROSTEPPING 16.0 
 #define DRIVER_CURRENT_mA 400 // current in milliamps  
  
 #define MAX_SPEED_RPS  60
 #define MIN_SPEED_RPS  1
-#define INIT_SPEED_RPS 1  // needs to be a bit slow or the motor will stall
+#define INIT_SPEED_RPS 1  // a target
+#define INIT_SPEED_ACTUAL 0.1 // accel from this to target
+#define SPEED_INCR_VAL 0.2 // change amount per +,- inputs
+#define ACCEL_RATE 0.05  // speed changes by this much per DISPLAY_INTERVAL until target speed
 
 #define DISPLAY_INTERVAL 10 // in milliseconds. How oftn to display values
 
-
-#define INIT_SGT_VALUE 0
+#define INIT_SGT_VALUE 6
 
 #define EN_PIN    GPIO_NUM_13
-#define DIR_PIN   GPIO_NUM_26
+
+/*
+#define DIR_PIN   GPIO_NUM_26// X
 #define STEP_PIN  GPIO_NUM_12 
 #define CS_PIN    GPIO_NUM_17 
+*/
+#define DIR_PIN   GPIO_NUM_25// Y
+#define STEP_PIN  GPIO_NUM_14 
+#define CS_PIN    GPIO_NUM_16 
 
 #include <TMC2130Stepper.h>  // https://github.com/teemuatlut/TMC2130Stepper 
 #include <TMC2130Stepper_REGDEFS.h> 
@@ -54,14 +64,19 @@ bool vsense;
 volatile uint16_t speed_rps = INIT_SPEED_RPS; // a good starting point for a lot of motors
 int8_t sg_value = INIT_SGT_VALUE;
 
+float current_speed = INIT_SPEED_ACTUAL;
+float target_speed = INIT_SPEED_ACTUAL;
+bool steps_enabled = false;
+
+MeanFilter<long> meanFilter(10);
+
 
 uint16_t rms_current(uint8_t CS, float Rsense = 0.11) {
   return (float)(CS+1)/32.0 * (vsense?0.180:0.325)/(Rsense+0.02) / 1.41421 * 1000;
-
 }
 
 // used to get step interval from RPM
-uint32_t step_interval_us(uint16_t rps) { 
+uint32_t step_interval_us(float rps) { 
 	uint32_t steps_per_second = ((MOTOR_STEPS * MICROSTEPPING * rps));	
 	return (1000000 / steps_per_second);
 }
@@ -80,6 +95,7 @@ void IRAM_ATTR onTimer(){
 char buff[100];  // for sprintf
 
 void setup() {
+	// menu
 	Serial.begin(115200); //init serial port and set baudrate    
     Serial.println("\r\nTMC2130 StallGuard2 test program\r\n");
 	Serial.println("'+' = faster");
@@ -91,7 +107,7 @@ void setup() {
 	Serial.println("'d' = dec sg");	
 	Serial.println("Send '1' character to begin (\r\n");	
 	
-	while(Serial.available() == 0)
+	while(Serial.available() == 0) // what for a buuton push...allows reading menu
 	{
 	}
 	
@@ -108,26 +124,25 @@ void setup() {
     SPI.begin();
     
 	
-	// Set timer interrupt
+	// Set timer interrupt that generates pulses
     timer = timerBegin(0, 80, true);  //set timer to microseconds divider (80 MHz / 80 = 1 MHz, as for 1 microsconds)
     timerAttachInterrupt(timer, &onTimer, true);
-    timerAlarmWrite(timer, step_interval_us(speed_rps), true); //set alarm for every 128 microseconds, on rising/falling edge
+    timerAlarmWrite(timer, step_interval_us(current_speed), true);
 	timerAlarmEnable(timer); //enable alarm    
-  
-  
 	
   
-
 	driver.push();
     driver.toff(3);
     driver.tbl(1);
+	driver.stealthChop(1);
+	driver.coolstep_min_speed(200); // 20bit max
     driver.hysteresis_start(4);
     driver.hysteresis_end(-2);
-    driver.rms_current(600); // mA
+    driver.rms_current(DRIVER_CURRENT_mA); // mA
     driver.microsteps(16);
     driver.diag1_stall(1);
-    driver.diag1_active_high(1);
-    driver.coolstep_min_speed(0xFFFFF); // 20bit max
+    driver.diag1_active_high(1);	
+    
     driver.THIGH(0);
     driver.semin(5);
     driver.semax(2);
@@ -151,27 +166,37 @@ void loop()
   static uint32_t last_time=0;
   uint32_t ms = millis();
   
+  
+  
   portENTER_CRITICAL(&timerMux);
   while(Serial.available() > 0) {
     int8_t read_byte = Serial.read();
-    if (read_byte == '0')      { timerAlarmDisable(timer); digitalWrite( EN_PIN, HIGH ); }
-    else if (read_byte == '1') { timerAlarmEnable(timer); digitalWrite( EN_PIN,  LOW ); }
+    if (read_byte == '0')      { 
+		timerAlarmDisable(timer);
+		digitalWrite( EN_PIN, HIGH ); 
+		steps_enabled = true;
+		current_speed = INIT_SPEED_ACTUAL;
+	}
+    else if (read_byte == '1') { 
+		timerAlarmEnable(timer); 
+		digitalWrite( EN_PIN,  LOW );
+		steps_enabled = true;
+	}
     else if (read_byte == '+') {
-      if (speed_rps < MAX_SPEED_RPS) { 
-        speed_rps += 1; 
-        timerAlarmWrite(timer, step_interval_us(speed_rps), true); 
+      if (target_speed < MAX_SPEED_RPS) { 
+        target_speed += SPEED_INCR_VAL;
+		Serial.print("faster\r\n");
       }
     }
     else if (read_byte == '-') {
-      if (speed_rps > MIN_SPEED_RPS) { 
-        speed_rps -= 1; 
-		Serial.println("slower");
-        timerAlarmWrite(timer, step_interval_us(speed_rps), true); 
+      if (target_speed > MIN_SPEED_RPS) { 
+        target_speed -= SPEED_INCR_VAL; 
+		Serial.print("slower\r\n");
       }
 
     }
 	else if (read_byte == 'r') { // reverse
-		digitalWrite(DIR_PIN, !digitalRead(DIR_PIN));
+		digitalWrite(DIR_PIN, !digitalRead(DIR_PIN));		
 	}
 	else if (read_byte == 'i') { // increase stall value
 		if (sg_value < 64) {
@@ -194,19 +219,35 @@ void loop()
   {
     last_time = ms;
 	
+	if(steps_enabled) {
+		if (fabs(current_speed - target_speed) >=  ACCEL_RATE) {
+			if (current_speed < target_speed) {
+				current_speed += ACCEL_RATE;
+			}
+			else {
+				current_speed -= ACCEL_RATE;
+			}
+		}
+		timerAlarmWrite(timer, step_interval_us(current_speed), true);
+	}
+	
 	uint32_t TSTEP = driver.TSTEP();
 	
 	if (TSTEP != 0xFFFFF) {	// if driver is stepping
 	
 		uint32_t drv_status = driver.DRV_STATUS();	
+
+   
+
+    int mean = meanFilter.AddValue((drv_status & STALLGUARD_bm)>>STALLGUARD_bp);
 	
-		sprintf(buff, "RPS:%02d SGT:%02d SGV:%04d", speed_rps, sg_value, (drv_status & SG_RESULT_bm)>>SG_RESULT_bp);
+		sprintf(buff, "RPS:%2.1f SGT:%02d SGV:%04d", current_speed, sg_value, (drv_status & SG_RESULT_bm)>>SG_RESULT_bp);
 		Serial.print(buff);
 		
 		sprintf(buff, " TSTEP: %05d", TSTEP);
 		Serial.print(buff);
 		
-		sprintf(buff, " SG: %d I:04%d \r\n", (drv_status & STALLGUARD_bm)>>STALLGUARD_bp, DEC, (drv_status & CS_ACTUAL_bm)>>CS_ACTUAL_bp);
+		sprintf(buff, " SG: %d I:04%d \r\n", mean, DEC, (drv_status & CS_ACTUAL_bm)>>CS_ACTUAL_bp);
 		Serial.print(buff);	
 	}
   }
